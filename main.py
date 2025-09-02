@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from scipy import stats, optimize
+from scipy.optimize import differential_evolution
 
 # 1. Εισαγωγή δεδομένων από τον χρήστη
 try:
@@ -33,13 +34,9 @@ except Exception as e:
 
 # Compute historical volatility for MLE
 log_returns = np.log(prices / prices.shift(1)).dropna()
-volatility_historical = log_returns.rolling(window=252).std() * np.sqrt(252)  # Increased to 252 days
+volatility_historical = log_returns.rolling(window=252).std() * np.sqrt(252)
 variance_historical = volatility_historical ** 2
 log_variance = np.log(variance_historical.ffill().dropna())  # Log of variance
-print("Sample of Historical Volatility (sigma):\n")
-print(volatility_historical.head())
-print("Sample of Log Variance (log(v_t)):\n")
-print(log_variance.head())
 print("\n")
 
 # Define likelihood functions for MLE
@@ -54,7 +51,8 @@ def std(dt, k, x):
 
 def log_likelihood(params, log_vol, dt):
     k, theta, x = params
-    if k <= 0 or theta <= 0 or x <= 0:
+    # Internal constraints to avoid extreme values
+    if k <= 0 or theta <= 0 or x <= 0 or k > 10.0 or theta > 0.5 or x > 0.2:
         return np.inf
     log_v_t = log_vol[:-1]
     log_v_dt = log_vol[1:]
@@ -65,34 +63,25 @@ def log_likelihood(params, log_vol, dt):
     ll = np.sum(stats.norm.logpdf(log_v_dt, loc=mu_OU, scale=sigma_OU))
     return -ll if np.isfinite(ll) else np.inf
 
-# Calibrate Log-OU parameters with MLE
+# Calibrate Log-OU parameters with differential_evolution
 dt = 1 / 252  # Daily time step for calibration
-initial_guesses = [[1.0, 0.04, 0.1], [0.5, 0.05, 0.05], [1.5, 0.03, 0.15]]  # Multiple initial guesses
-bounds = [(0.01, 5.0), (0.01, 0.2), (0.01, 0.2)]  # Adjusted theta bound to 0.2
-best_ll = np.inf
-best_params = [2.0, 0.04, 0.1]  # Fallback
-for guess in initial_guesses:
-    result = optimize.minimize(log_likelihood, guess, args=(log_variance, dt), bounds=bounds, method='L-BFGS-B')
-    if result.success and result.fun < best_ll:
-        best_ll = result.fun
-        best_params = result.x
-k, theta, x = best_params
+bounds = [(0.01, 10.0), (0.01, 0.5), (0.01, 0.2)]  # Narrower bounds to stabilize
+np.random.seed(42)  # Fixed seed for reproducibility
+result = differential_evolution(log_likelihood, bounds, args=(log_variance, dt), maxiter=1000, seed=42)
+k, theta, x = result.x
 v0 = theta  # Initial variance set to long-term mean
-print(f"{ticker} Calibrated Parameters (via MLE):\n")
+print(f"{ticker} Calibrated Parameters (via differential_evolution):\n")
 print(f"k = {k:.4f}, theta = {theta:.4f}, x = {x:.4f}\n")
 print(f"Optimization success: {result.success}, Message: {result.message}\n")
-if not result.success:
-    print("Calibration failed. Using fallback parameters.\n")
-    k, theta, x, v0 = 2.0, 0.04, 0.1, 0.04
 
 # Παράμετροι για το δέντρο
-T = 1.0  # Χρόνος λήξης
+T = 1.04  # Χρόνος λήξης προσαρμοσμένος σε 18 Σεπτεμβρίου 2026
 dt = T / N  # Χρονικά διαστήματα βασισμένα στο N
-r = 0.03  # Ρίσκο ελεύθερο επιτόκιο
-K = S0 * 1.1  # Out of the money strike price
+r = 0.02  # Ρίσκο ελεύθερο επιτόκιο
+K = 255.00  # Strike price από Yahoo Finance
 
 # log-OU υπολογισμός
-np.random.seed(42)  # Οι τυχαίοι αριθμοί είναι ίδιοι
+np.random.seed(42)  # Fixed seed for tree simulation
 log_v = np.zeros(N + 1)
 log_v[0] = np.log(v0)
 for i in range(1, N + 1):
@@ -135,5 +124,5 @@ plt.plot(volatility)
 plt.title(f'Log-Ornstein-Uhlenbeck Volatility for {ticker}')
 plt.xlabel('Time Steps')
 plt.ylabel('Volatility (σ)')
-plt.savefig(f'volatility_plot_{ticker}.png')  # Save the plot with ticker name
+plt.savefig(f'volatility_plot_{ticker}.png')
 plt.show()
