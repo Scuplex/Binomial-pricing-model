@@ -65,7 +65,7 @@ option_price = np.zeros((N+1, N+1))
 for j in range(N+1):
     option_price[N, j] = max(0, tree[N, j] - K)
 
-for i in range(N - 1, -1, -1):
+for i in range(N - 1, -1, -1): #Discounting the Prices
     sigma = volatility[i]
     up = np.exp(sigma*np.sqrt(dt))
     down = 1 / up
