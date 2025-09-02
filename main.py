@@ -5,10 +5,21 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
 # 1. Δεδομενα
-#end_date = datetime(2025, 9, 1).strftime('%Y-%m-%d')  # Today's date
-#start_date = (datetime(2025, 9, 1) - timedelta(days=5*365)).strftime('%Y-%m-%d')  # 5 years back
-#df = yf.download("AAPL", start=start_date, end=end_date)
-S0 = 120 #df['Close'][-1] # αρχικη τιμη της μετοχης 
+try:
+    end_date = datetime(2025, 9, 2).strftime('%Y-%m-%d')  # Σημερινη ημερα
+    start_date = (datetime(2025, 9, 2) - timedelta(days=5*365)).strftime('%Y-%m-%d')  # 5 xρονια πισω
+    df = yf.download("TSLA", start=start_date, end=end_date, auto_adjust=True)  # αυτοματα βαζει ημερομηνιες
+    
+    if df.empty:
+        raise ValueError("No data retrieved from yfinance. Check ticker or date range.")
+    
+    # Ελεγχουμε αν το dataframe ειναι κενο
+    S0 = df['Close'].iloc[-1].item()  
+    print(f"Initial stock price (S0): {S0:.2f}")
+except Exception as e:
+    print(f"Error fetching data: {e}")
+    S0 = 150.0  # Αν ειναι κενο βαζουμε μια συγκεκριμενη τιμη
+    print(f"Using fallback stock price: {S0}") 
 
 # Παραμετροι για το δεντρο 
 T = 1.0 # Χρονος Ληξης
