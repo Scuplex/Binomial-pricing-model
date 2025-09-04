@@ -6,7 +6,7 @@ from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
-# Fetch user inputs
+# User inputs
 ticker = input("Enter stock ticker (e.g., AAPL, NVDA): ").strip().upper()
 N = int(input("Number of time steps for binomial tree (e.g., 100): "))
 
@@ -24,8 +24,8 @@ print(f"Current {ticker} price: ${S0:.2f}")
 # Calculate log returns and historical volatility
 log_returns = np.log(prices / prices.shift(1)).dropna()
 volatility_historical = log_returns.rolling(window=252).std() * np.sqrt(252)
-variance_historical = volatility_historical.ffill().dropna()
-log_variance = np.log(variance_historical)
+variance_historical = (volatility_historical ** 2).ffill().dropna()
+log_variance = np.log(variance_historical.clip(lower=1e-12).values)
 
 # MLE Calibration for Log-OU process
 def log_likelihood(params, log_vol, dt=1/252):
@@ -40,11 +40,11 @@ def log_likelihood(params, log_vol, dt=1/252):
 bounds = [(1e-3, 10), (1e-3, 0.5), (1e-3, 0.5)]
 result = differential_evolution(log_likelihood, bounds, args=(log_variance,), maxiter=1000, seed=42)
 k, theta, x = result.x
-v0 = variance_historical.iloc[-1]  # Use the most recent historical variance
+v0 = float(variance_historical.iloc[-1])  # Use the most recent historical variance
 
 print(f"Calibrated Log-OU parameters: k={k:.4f}, theta={theta:.4f}, x={x:.4f}")
 print(f"Calibrated annual volatility: {np.sqrt(theta)*100:.2f}%")
-print(f"Current annual volatility: {np.sqrt(v0.values[0])*100:.2f}%")
+print(f"Current annual volatility: {np.sqrt(v0)*100:.2f}%")
 
 # Fetch option data for the stock
 stock = yf.Ticker(ticker)
@@ -60,8 +60,8 @@ exp_choice = int(input("Select expiration date by number: ")) - 1
 exp_date = exp_dates[exp_choice]
 
 # Calculate time to expiration
-T = (pd.Timestamp(exp_date) - pd.Timestamp.now()).days / 365
-print(f"Time to expiration: {T:.2f} years")
+T = max((pd.Timestamp(exp_date) - pd.Timestamp.now()).total_seconds() / (365.25 * 24 * 3600), 0.0)
+print(f"Time to expiration: {T:.4f} years")
 
 # Set risk-free rate and dividend yield
 try:
@@ -73,7 +73,8 @@ except:
     r = 0.02  # Fallback rate
     print(f"Using fallback risk-free rate: {r:.4f}")
 
-q = stock.info.get('dividendYield', 0)  # Use actual dividend yield if available
+q_raw = stock.info.get('dividendYield', 0) or 0.0
+q = float(q_raw)  # Use actual dividend yield if available
 print(f"Using risk-free rate: {r:.4f}, dividend yield: {q:.4f}")
 
 # Get options for selected expiration
@@ -145,7 +146,8 @@ print(f"\nPricing {ticker} {exp_date} Call Option with Strike {K}:")
 # Binomial tree with stochastic volatility (Log-OU)
 print("Building binomial tree with Log-OU stochastic volatility...")
 
-dt = T / N
+dt = T / N if N > 0 else 0.0
+eps = 1e-12
 
 # We'll create a 2D tree for both price and variance
 price_tree = np.zeros((N+1, N+1))
@@ -183,13 +185,13 @@ for i in range(1, N+1):
             avg_log_var = avg_log_var + k * (np.log(theta) - avg_log_var) * dt
             variance_tree[i, j] = max(np.exp(avg_log_var), 1e-10)
         
-        # Update price based on current volatility
-        volatility = np.sqrt(variance_tree[i, j])
-        u = np.exp(volatility * np.sqrt(dt))
-        d = 1 / u
-        
-        # Risk-neutral probability
-        p = (np.exp((r - q) * dt) - d) / (u - d)
+        volatility = float(np.sqrt(max(variance_tree[i, j], eps)))
+        u = np.exp(volatility * np.sqrt(dt)) if dt > 0 else 1.0
+        d = 1.0 / max(u, eps)
+
+        denom = max(u - d, eps)
+        p = (np.exp((r - q) * dt) - d) / denom
+        p = float(np.clip(p, 0.0, 1.0))
         
         # Calculate price
         if j == 0:
@@ -222,34 +224,29 @@ print("Running Monte Carlo simulation for comparison...")
 num_simulations = 50000
 
 np.random.seed(42)
-# Use correlated shocks for more realistic simulation
-shocks = np.random.multivariate_normal(
-    mean=[0, 0], 
-    cov=[[1, 0.2], [0.2, 1]],  # Add some correlation between price and volatility shocks
-    size=(num_simulations, N)
-)
-vol_shocks = shocks[:, :, 0]
-price_shocks = shocks[:, :, 1]
+rho = 0.2
+cov = np.array([[1.0, rho],[rho, 1.0]])
+L = np.linalg.cholesky(cov)
 
 mc_payoffs = np.zeros(num_simulations)
 for i in range(num_simulations):
-    v0_value = v0.iloc[0] if isinstance(v0, pd.Series) else v0
-    log_v = np.log(max(v0_value, 1e-10))
+    log_v = np.log(max(v0, eps))
     S = S0
-    
     for j in range(N):
-        # Update volatility process
-        log_v = log_v + k * (np.log(theta) - log_v) * dt + x * np.sqrt(dt) * vol_shocks[i, j]
-        variance = max(np.exp(log_v), 1e-10)
+        z = L @ np.random.normal(size=2)
+        vol_shock, price_shock = z[0], z[1]
+
+        log_v = log_v + k * (np.log(theta) - log_v) * dt + x * np.sqrt(dt) * vol_shock
+        variance = max(np.exp(log_v), eps)
         sigma = np.sqrt(variance)
-        
-        # Update stock price
-        S = S * np.exp((r - q - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * price_shocks[i, j])
-    
+
+        if dt > 0:
+            S *= np.exp((r - q - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * price_shock)
+
     mc_payoffs[i] = max(S - K, 0)
 
-mc_price = np.exp(-r * T) * np.mean(mc_payoffs)
-mc_std = np.exp(-r * T) * np.std(mc_payoffs) / np.sqrt(num_simulations)
+mc_price = np.exp(-r * T) * mc_payoffs.mean()
+mc_std = np.exp(-r * T) * mc_payoffs.std(ddof=1) / np.sqrt(num_simulations)
 
 # Results
 print(f"\nComparison for {ticker} {exp_date} Call Option with Strike {K}:")
@@ -264,8 +261,6 @@ if market_price > 0:
     print(f"Percentage Difference (MC): {mc_diff_pct:.2f}%")
 
 # Additional analysis
+intrinsic_value = max(S0 - K, 0.0)
 print("\nAdditional Analysis:")
-print(f"Option Moneyness: {K/S0:.2%} (Strike/Current Price)")
-intrinsic_value = max(S0 - K, 0)
-print(f"Intrinsic Value: ${intrinsic_value:.2f}")
-print(f"Time Value: ${market_price - intrinsic_value:.2f}")
+print(f"Time Value: ${float(market_price - intrinsic_value):.2f}")
