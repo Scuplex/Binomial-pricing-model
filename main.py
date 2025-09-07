@@ -8,6 +8,47 @@ import math
 from scipy.stats import norm
 warnings.filterwarnings('ignore')
 
+def get_risk_free_rate():
+    """Fetch risk-free rate with multiple fallback options"""
+    try:
+        treasury = yf.Ticker("^TNX")
+        treasury_data = treasury.history(period="1d")
+        return treasury_data['Close'].iloc[-1] / 100
+    except:
+        try:
+            # Alternative treasury ticker
+            treasury = yf.Ticker("^IRX")
+            treasury_data = treasury.history(period="1d")
+            return treasury_data['Close'].iloc[-1] / 100
+        except:
+            print("Warning: Using fallback risk-free rate of 2%")
+            return 0.02
+
+def estimate_dividend_yield(ticker, S0):
+    """More robust dividend yield estimation"""
+    stock = yf.Ticker(ticker)
+    info = stock.info
+    
+    # Try multiple approaches to get dividend yield
+    for key in ['dividendYield', 'trailingAnnualDividendYield', 'forwardAnnualDividendYield']:
+        if key in info and info[key] is not None:
+            yield_value = info[key]
+            if yield_value > 0.1:  # if yield is above 10%, it might be error
+                return 0.0
+            return yield_value
+    
+    # If no dividend yield found, calculate from recent dividends
+    try:
+        dividends = stock.dividends
+        if len(dividends) > 0:
+            annual_dividend = dividends.tail(4).sum()
+            current_price = info.get('currentPrice', S0)
+            return annual_dividend / current_price
+    except:
+        pass
+    
+    return 0.0
+
 # --------------------------
 # User inputs
 # --------------------------
@@ -19,9 +60,15 @@ N = int(input("Number of time steps for binomial tree: \n"))
 # --------------------------
 end_date = pd.Timestamp.now().strftime('%Y-%m-%d')
 start_date = (pd.Timestamp.now() - pd.DateOffset(years=2)).strftime('%Y-%m-%d')
-data = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True)
-if data.empty:
-    raise ValueError(f"No data found for {ticker}")
+
+try:
+    data = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True)
+    if data.empty:
+        raise ValueError(f"No data found for {ticker}")
+except Exception as e:
+    print(f"Error downloading data: {e}")
+    exit()
+
 S0 = float(data['Close'].iloc[-1])
 prices = data['Close']
 print(f"Current {ticker} price: ${S0:.2f}\n")
@@ -63,57 +110,74 @@ if not exp_dates:
 print("\nAvailable expiration dates:")
 for i, date in enumerate(exp_dates):
     print(f"{i+1}. {date}")
-exp_choice = int(input("Select expiration date by number: ")) - 1
-exp_date = exp_dates[exp_choice]
+    
+try:
+    exp_choice = int(input("Select expiration date by number: ")) - 1
+    exp_date = exp_dates[exp_choice]
+except (ValueError, IndexError):
+    print("Invalid selection. Using first available expiration date.")
+    exp_date = exp_dates[0]
 
 T = max((pd.Timestamp(exp_date) - pd.Timestamp.now()).total_seconds() / (365.25*24*3600), 0.0)
 print(f"Time to expiration: {T:.4f} years")
 
-try:
-    treasury = yf.Ticker("^TNX")
-    treasury_data = treasury.history(period="1d")
-    r = treasury_data['Close'].iloc[-1] / 100
-    print(f"Current 10-year Treasury yield: {r:.4f}")
-except:
-    r = 0.02
-    print(f"Using fallback risk-free rate: {r:.4f}")
+r = get_risk_free_rate()
+q = estimate_dividend_yield(ticker, S0)
 
-q_raw = stock.info.get('dividendYield', 0) or 0.0
-q = float(q_raw)
 print(f"Using risk-free rate: {r:.4f}, dividend yield: {q:.4f}")
 
 options = stock.option_chain(exp_date)
 calls = options.calls
 valid_calls = calls[((calls['bid'] > 0) | (calls['ask'] > 0))].copy()
-if 'midPrice' not in valid_calls.columns:
-    valid_calls['midPrice'] = (valid_calls['bid'] + valid_calls['ask'])/2
-
+valid_calls['midPrice'] = (valid_calls['bid'] + valid_calls['ask'])/2
 valid_calls['moneyness'] = valid_calls['strike']/S0
 valid_calls['distance'] = abs(valid_calls['moneyness'] - 1)
-valid_calls_display = valid_calls.reset_index(drop=True)
+# Sort by distance to moneyness to show nearest strikes first
+valid_calls_sorted = valid_calls.sort_values('distance')
+valid_calls_display = valid_calls_sorted.reset_index(drop=True)
 valid_calls_display['Index'] = valid_calls_display.index
+
 display_cols = ['Index','strike','bid','ask','midPrice','moneyness']
 if 'impliedVolatility' in valid_calls_display.columns:
     display_cols.append('impliedVolatility')
+    
 print(valid_calls_display[display_cols].head(10))
 
 print("\nOptions:\n1. Select from the list above\n2. Enter a custom strike price")
 choice = input("Enter your choice (1 or 2): ").strip()
-if choice=="1":
-    num_options = min(10,len(valid_calls_display))
-    strike_choice = int(input(f"Enter the index of the strike price you want to use (0-{num_options-1}): "))
-    call_option = valid_calls_display.iloc[strike_choice]
-    K = call_option['strike']
-    market_price = call_option['midPrice']
+
+if choice == "1":
+    num_options = min(10, len(valid_calls_display))
+    try:
+        strike_choice = int(input(f"Enter the index of the strike price you want to use (0-{num_options-1}): "))
+        call_option = valid_calls_display.iloc[strike_choice]
+        K = call_option['strike']
+        market_price = call_option['midPrice']
+    except (ValueError, IndexError):
+        print("Invalid selection. Using first available strike.")
+        call_option = valid_calls_display.iloc[0]
+        K = call_option['strike']
+        market_price = call_option['midPrice']
 else:
-    K = float(input("Enter the custom strike price: "))
-    closest_idx = (valid_calls['strike'] - K).abs().idxmin()
-    if abs(valid_calls.loc[closest_idx,'strike'] - K)/K < 0.05:
-        market_price = valid_calls.loc[closest_idx,'midPrice']
-    else:
-        d1 = (np.log(S0/K) + (r-q+0.5*theta)*T)/(np.sqrt(theta)*np.sqrt(T))
-        d2 = d1 - np.sqrt(theta)*np.sqrt(T)
-        market_price = S0*np.exp(-q*T)*norm.cdf(d1) - K*np.exp(-r*T)*norm.cdf(d2)
+    try:
+        K = float(input("Enter the custom strike price: "))
+        closest_idx = (valid_calls['strike'] - K).abs().idxmin()
+        if abs(valid_calls.loc[closest_idx, 'strike'] - K)/K < 0.05:
+            market_price = valid_calls.loc[closest_idx, 'midPrice']
+        else:
+            # Calculate theoretical price using Black-Scholes as fallback
+            d1 = (np.log(S0/K) + (r - q + 0.5 * theta) * T) / (np.sqrt(theta) * np.sqrt(T))
+            d2 = d1 - np.sqrt(theta) * np.sqrt(T)
+            market_price = S0 * np.exp(-q * T) * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    except ValueError:
+        print("Invalid strike price. Using at-the-money strike.")
+        K = S0
+        closest_idx = (valid_calls['strike'] - K).abs().idxmin()
+        market_price = valid_calls.loc[closest_idx, 'midPrice']
+
+# Warn if strike is too far from current price
+if abs(K - S0) / S0 > 0.5:
+    print(f"Warning: Strike price ${K} is significantly different from current price ${S0}. Results may be unreliable.")
 
 eps = 1e-12
 dt = T/N if N>0 else 0.0
@@ -205,7 +269,13 @@ for t in range(N-1, -1, -1):
 binomial_price = V_next[0]
 print(f"Binomial Tree Price (Log-OU): ${binomial_price:.4f}")
 
-rho = 0
+# Estimate correlation between price returns and volatility changes
+log_returns = np.log(prices / prices.shift(1)).dropna()
+vol_changes = volatility_historical.diff().dropna()
+aligned_data = pd.concat([log_returns, vol_changes], axis=1).dropna()
+aligned_data.columns = ['returns', 'vol_changes']
+rho = aligned_data.corr().iloc[0, 1]
+print(f"Estimated correlation between price and volatility: {rho:.4f}")
 
 # --- Monte Carlo simulation using safe rho ---
 num_simulations = 50000
@@ -249,8 +319,6 @@ mc_std = np.exp(-r*T) * mc_payoffs.std(ddof=1) / np.sqrt(num_simulations)
 print(f"Monte Carlo Price (antithetic, rho={rho:.3f}): ${mc_price:.4f} (±${mc_std*1.96:.4f} 95% CI)")
 print(f"\nComparison for {ticker} {exp_date} Call Option with Strike {K}:")
 print(f"Market Price: ${market_price:.2f}")
-# Binomial price placeholder (αντικατάστησε με τον ήδη υπολογισμένο σου)
-binomial_price = binomial_price 
 print(f"Binomial Tree Price: ${binomial_price:.2f}")
 print(f"Monte Carlo Price: ${mc_price:.2f} (±${mc_std*1.96:.2f} with 95% CI)")
 
@@ -259,3 +327,4 @@ if market_price > 0:
     mc_diff_pct = (mc_price - market_price) / market_price * 100
     print(f"Percentage Difference (Binomial): {binomial_diff_pct:.2f}%")
     print(f"Percentage Difference (MC): {mc_diff_pct:.2f}%")
+    
