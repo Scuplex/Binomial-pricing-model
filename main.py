@@ -4,13 +4,19 @@ import pandas as pd
 from scipy.optimize import differential_evolution
 from scipy import stats
 import warnings
+import math
+from scipy.stats import norm
 warnings.filterwarnings('ignore')
 
+# --------------------------
 # User inputs
-ticker = input("Enter stock ticker (e.g., AAPL, NVDA): ").strip().upper()
-N = int(input("Number of time steps for binomial tree (e.g., 100): "))
+# --------------------------
+ticker = input("Enter stock ticker : ").strip().upper()
+N = int(input("Number of time steps for binomial tree: \n"))
 
+# --------------------------
 # Download historical data
+# --------------------------
 end_date = pd.Timestamp.now().strftime('%Y-%m-%d')
 start_date = (pd.Timestamp.now() - pd.DateOffset(years=2)).strftime('%Y-%m-%d')
 data = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True)
@@ -18,16 +24,16 @@ if data.empty:
     raise ValueError(f"No data found for {ticker}")
 S0 = float(data['Close'].iloc[-1])
 prices = data['Close']
+print(f"Current {ticker} price: ${S0:.2f}\n")
 
-print(f"Current {ticker} price: ${S0:.2f}")
-
-# Calculate log returns and historical volatility
+# --------------------------
+# Log-OU Calibration
+# --------------------------
 log_returns = np.log(prices / prices.shift(1)).dropna()
 volatility_historical = log_returns.rolling(window=252).std() * np.sqrt(252)
-variance_historical = (volatility_historical ** 2).ffill().dropna()
+variance_historical = (volatility_historical**2).ffill().dropna()
 log_variance = np.log(variance_historical.clip(lower=1e-12).values)
 
-# MLE Calibration for Log-OU process
 def log_likelihood(params, log_vol, dt=1/252):
     k, theta, x = params
     if k <= 0 or theta <= 0 or x <= 0:
@@ -40,217 +46,211 @@ def log_likelihood(params, log_vol, dt=1/252):
 bounds = [(1e-3, 10), (1e-3, 0.5), (1e-3, 0.5)]
 result = differential_evolution(log_likelihood, bounds, args=(log_variance,), maxiter=1000, seed=42)
 k, theta, x = result.x
-v0 = float(variance_historical.iloc[-1])  # Use the most recent historical variance
+v0 = float(variance_historical.iloc[-1])
 
 print(f"Calibrated Log-OU parameters: k={k:.4f}, theta={theta:.4f}, x={x:.4f}")
 print(f"Calibrated annual volatility: {np.sqrt(theta)*100:.2f}%")
 print(f"Current annual volatility: {np.sqrt(v0)*100:.2f}%")
 
-# Fetch option data for the stock
+# --------------------------
+# Option selection
+# --------------------------
 stock = yf.Ticker(ticker)
 exp_dates = stock.options
 if not exp_dates:
     raise ValueError(f"No option data for {ticker}")
-    
-# Let user select expiration date
+
 print("\nAvailable expiration dates:")
 for i, date in enumerate(exp_dates):
     print(f"{i+1}. {date}")
 exp_choice = int(input("Select expiration date by number: ")) - 1
 exp_date = exp_dates[exp_choice]
 
-# Calculate time to expiration
-T = max((pd.Timestamp(exp_date) - pd.Timestamp.now()).total_seconds() / (365.25 * 24 * 3600), 0.0)
+T = max((pd.Timestamp(exp_date) - pd.Timestamp.now()).total_seconds() / (365.25*24*3600), 0.0)
 print(f"Time to expiration: {T:.4f} years")
 
-# Set risk-free rate and dividend yield
 try:
     treasury = yf.Ticker("^TNX")
     treasury_data = treasury.history(period="1d")
     r = treasury_data['Close'].iloc[-1] / 100
     print(f"Current 10-year Treasury yield: {r:.4f}")
 except:
-    r = 0.02  # Fallback rate
+    r = 0.02
     print(f"Using fallback risk-free rate: {r:.4f}")
 
 q_raw = stock.info.get('dividendYield', 0) or 0.0
-q = float(q_raw)  # Use actual dividend yield if available
+q = float(q_raw)
 print(f"Using risk-free rate: {r:.4f}, dividend yield: {q:.4f}")
 
-# Get options for selected expiration
 options = stock.option_chain(exp_date)
 calls = options.calls
-
-# Filter and sort options
 valid_calls = calls[((calls['bid'] > 0) | (calls['ask'] > 0))].copy()
 if 'midPrice' not in valid_calls.columns:
-    valid_calls['midPrice'] = (valid_calls['bid'] + valid_calls['ask']) / 2
+    valid_calls['midPrice'] = (valid_calls['bid'] + valid_calls['ask'])/2
 
-valid_calls['moneyness'] = valid_calls['strike'] / S0
+valid_calls['moneyness'] = valid_calls['strike']/S0
 valid_calls['distance'] = abs(valid_calls['moneyness'] - 1)
-
-# Sort by moneyness distance
-if 'volume' in valid_calls.columns and 'openInterest' in valid_calls.columns:
-    valid_calls = valid_calls.sort_values(['distance', 'volume', 'openInterest'], 
-                                         ascending=[True, False, False])
-else:
-    valid_calls = valid_calls.sort_values('distance', ascending=True)
-
-# Display options
 valid_calls_display = valid_calls.reset_index(drop=True)
-print(f"\nAvailable call options (sorted by distance from current price ${S0:.2f}):")
-display_cols = ['strike', 'bid', 'ask', 'midPrice', 'moneyness']
+valid_calls_display['Index'] = valid_calls_display.index
+display_cols = ['Index','strike','bid','ask','midPrice','moneyness']
 if 'impliedVolatility' in valid_calls_display.columns:
     display_cols.append('impliedVolatility')
-    
-display_cols = [col for col in display_cols if col in valid_calls_display.columns]
-valid_calls_display['Index'] = valid_calls_display.index
-display_cols = ['Index'] + display_cols
-
 print(valid_calls_display[display_cols].head(10))
 
-# Select strike price
-print("\nOptions:")
-print("1. Select from the list above")
-print("2. Enter a custom strike price")
+print("\nOptions:\n1. Select from the list above\n2. Enter a custom strike price")
 choice = input("Enter your choice (1 or 2): ").strip()
-
-if choice == "1":
-    num_options = min(10, len(valid_calls_display))
+if choice=="1":
+    num_options = min(10,len(valid_calls_display))
     strike_choice = int(input(f"Enter the index of the strike price you want to use (0-{num_options-1}): "))
-    if strike_choice < 0 or strike_choice >= num_options:
-        raise ValueError(f"Invalid index. Please enter a number between 0 and {num_options-1}")
     call_option = valid_calls_display.iloc[strike_choice]
     K = call_option['strike']
     market_price = call_option['midPrice']
 else:
     K = float(input("Enter the custom strike price: "))
-    # Find the closest option to get market price
     closest_idx = (valid_calls['strike'] - K).abs().idxmin()
-    if abs(valid_calls.loc[closest_idx, 'strike'] - K) / K < 0.05:  # Within 5%
-        market_price = valid_calls.loc[closest_idx, 'midPrice']
-        print(f"Using market price ${market_price:.2f} from similar strike")
+    if abs(valid_calls.loc[closest_idx,'strike'] - K)/K < 0.05:
+        market_price = valid_calls.loc[closest_idx,'midPrice']
     else:
-        # Estimate price using Black-Scholes with historical volatility
-        from scipy.stats import norm
-        d1 = (np.log(S0/K) + (r - q + 0.5*theta)*T) / (np.sqrt(theta)*np.sqrt(T))
+        d1 = (np.log(S0/K) + (r-q+0.5*theta)*T)/(np.sqrt(theta)*np.sqrt(T))
         d2 = d1 - np.sqrt(theta)*np.sqrt(T)
-        market_price = S0 * np.exp(-q*T) * norm.cdf(d1) - K * np.exp(-r*T) * norm.cdf(d2)
-        print(f"Estimated market price using Black-Scholes: ${market_price:.2f}")
+        market_price = S0*np.exp(-q*T)*norm.cdf(d1) - K*np.exp(-r*T)*norm.cdf(d2)
 
-# Always use historically calibrated volatility
-print("Using historically calibrated volatility")
-
-print(f"\nPricing {ticker} {exp_date} Call Option with Strike {K}:")
-
-# Binomial tree with stochastic volatility (Log-OU)
-print("Building binomial tree with Log-OU stochastic volatility...")
-
-dt = T / N if N > 0 else 0.0
 eps = 1e-12
+dt = T/N if N>0 else 0.0
+m = 21  # number of Markov states
+n_std = 4.0
+mu_stationary = np.log(theta)
+var_stationary = (x**2)/(2*k) if k>0 else (x**2)*dt
+logv0 = np.log(max(v0, eps))
 
-# We'll create a 2D tree for both price and variance
-price_tree = np.zeros((N+1, N+1))
-variance_tree = np.zeros((N+1, N+1))
+# Create log-volatility grid
+center = mu_stationary
+halfwidth = n_std * math.sqrt(max(var_stationary, eps))
+grid_min = min(center-halfwidth, logv0-halfwidth/2)
+grid_max = max(center+halfwidth, logv0+halfwidth/2)
+X_grid = np.linspace(grid_min, grid_max, m)
 
-# Initialize
-price_tree[0, 0] = S0
-variance_tree[0, 0] = v0
+# Midpoints for transition probabilities
+midpoints = np.zeros(m+1)
+midpoints[1:-1] = 0.5*(X_grid[:-1]+X_grid[1:])
+midpoints[0] = X_grid[0] - (X_grid[1]-X_grid[0])/2
+midpoints[-1] = X_grid[-1] + (X_grid[-1]-X_grid[-2])
 
-# Build the trees
-for i in range(1, N+1):
-    for j in range(i+1):
-        # Update variance using Log-OU process
+# Transition matrix P
+P = np.zeros((m,m))
+sigma_cond = x * math.sqrt((1 - np.exp(-2*k*dt))/(2*k)) if k>0 else x*math.sqrt(dt)
+exp_m = np.exp(-k*dt) if k>0 else 1.0 - k*dt
+for i in range(m):
+    mu_cond = exp_m*X_grid[i] + (1-exp_m)*np.log(theta)
+    cdf_vals = norm.cdf((midpoints - mu_cond)/max(sigma_cond, 1e-16))
+    probs = np.clip(cdf_vals[1:] - cdf_vals[:-1], 0.0, None)
+    s = probs.sum()
+    if s <= 0:
+        idx = int(np.argmin(np.abs(X_grid - mu_cond)))
+        probs = np.zeros_like(probs)
+        probs[idx] = 1.0
+    else:
+        probs /= s
+    P[i,:] = probs
+
+# Initial state
+state0 = int(np.argmin(np.abs(X_grid - logv0)))
+
+# Distribution over Markov states at each time step
+dist = np.zeros((N+1, m))
+dist[0, state0] = 1.0
+for t in range(1, N+1):
+    dist[t,:] = dist[t-1,:] @ P
+
+# Expected variance at each time step
+expected_logv = (dist * X_grid).sum(axis=1)
+expected_var = np.exp(expected_logv)
+
+# Initialize price nodes
+price_nodes = np.zeros((N+1, N+1))
+price_nodes[0,0] = S0
+
+for t in range(1, N+1):
+    vol_t = math.sqrt(max(expected_var[t-1], eps))
+    u = math.exp(vol_t * math.sqrt(dt))
+    d = 1.0 / u
+    p = (math.exp((r-q)*dt) - d) / (u - d)
+    p = float(np.clip(p, 0.0, 1.0))
+    
+    for j in range(t+1):
         if j == 0:
-            # Down movement for variance
-            prev_var = variance_tree[i-1, j]
-            log_var = np.log(max(prev_var, 1e-10))
-            log_var = log_var + k * (np.log(theta) - log_var) * dt - x * np.sqrt(dt)
-            variance_tree[i, j] = max(np.exp(log_var), 1e-10)
-        elif j == i:
-            # Up movement for variance
-            prev_var = variance_tree[i-1, j-1]
-            log_var = np.log(max(prev_var, 1e-10))
-            log_var = log_var + k * (np.log(theta) - log_var) * dt + x * np.sqrt(dt)
-            variance_tree[i, j] = max(np.exp(log_var), 1e-10)
+            price_nodes[t,j] = price_nodes[t-1,0] * d
+        elif j == t:
+            price_nodes[t,j] = price_nodes[t-1,j-1] * u
         else:
-            # Average of up and down movements for variance (recombining approximation)
-            prev_var_down = variance_tree[i-1, j]
-            prev_var_up = variance_tree[i-1, j-1]
-            log_var_down = np.log(max(prev_var_down, 1e-10))
-            log_var_up = np.log(max(prev_var_up, 1e-10))
-            
-            # Average the log variances
-            avg_log_var = (log_var_down + log_var_up) / 2
-            avg_log_var = avg_log_var + k * (np.log(theta) - avg_log_var) * dt
-            variance_tree[i, j] = max(np.exp(avg_log_var), 1e-10)
-        
-        volatility = float(np.sqrt(max(variance_tree[i, j], eps)))
-        u = np.exp(volatility * np.sqrt(dt)) if dt > 0 else 1.0
-        d = 1.0 / max(u, eps)
+            price_nodes[t,j] = p * price_nodes[t-1,j-1] * u + (1-p) * price_nodes[t-1,j] * d
 
-        denom = max(u - d, eps)
-        p = (np.exp((r - q) * dt) - d) / denom
-        p = float(np.clip(p, 0.0, 1.0))
-        
-        # Calculate price
-        if j == 0:
-            price_tree[i, j] = price_tree[i-1, j] * d
-        elif j == i:
-            price_tree[i, j] = price_tree[i-1, j-1] * u
-        else:
-            price_tree[i, j] = p * price_tree[i-1, j-1] * u + (1-p) * price_tree[i-1, j] * d
-
-# Calculate option value at expiration
-option_value = np.zeros((N+1, N+1))
+# Option values at maturity
+V_next = np.zeros(N+1)
 for j in range(N+1):
-    option_value[N, j] = max(price_tree[N, j] - K, 0)
+    V_next[j] = max(price_nodes[N,j] - K, 0.0)
 
-# Backward induction for option pricing
-for i in range(N-1, -1, -1):
-    for j in range(i+1):
-        volatility = np.sqrt(variance_tree[i, j])
-        u = np.exp(volatility * np.sqrt(dt))
-        d = 1 / u
-        p = (np.exp((r - q) * dt) - d) / (u - d)
-        
-        # Expected value of option
-        option_value[i, j] = np.exp(-r * dt) * (p * option_value[i+1, j+1] + (1-p) * option_value[i+1, j])
+# Backward induction
+for t in range(N-1, -1, -1):
+    V_curr = np.zeros(t+1)
+    for j in range(t+1):
+        vol_t = math.sqrt(max(expected_var[t], eps))
+        u = math.exp(vol_t * math.sqrt(dt))
+        d = 1.0 / u
+        p = (math.exp((r-q)*dt) - d) / (u - d)
+        p = float(np.clip(p, 0.0, 1.0))
+        V_curr[j] = math.exp(-r*dt) * (p*V_next[j+1] + (1-p)*V_next[j])
+    V_next = V_curr
 
-binomial_price = option_value[0, 0]
+binomial_price = V_next[0]
+print(f"Binomial Tree Price (Log-OU): ${binomial_price:.4f}")
 
-# Monte Carlo simulation for comparison
-print("Running Monte Carlo simulation for comparison...")
+rho = 0
+
+# --- Monte Carlo simulation using safe rho ---
 num_simulations = 50000
+if num_simulations % 2 == 1:
+    num_simulations += 1
 
 np.random.seed(42)
-rho = 0.2
-cov = np.array([[1.0, rho],[rho, 1.0]])
+num_half = num_simulations // 2
+sigma_ou_const = x * np.sqrt((1 - np.exp(-2 * k * T/N)) / (2 * k)) if k>0 else x * np.sqrt(T/N)
+mu_ou = np.log(theta)
+
+cov = np.array([[1.0, rho], [rho, 1.0]])
+eigvals = np.linalg.eigvals(cov)
+if np.any(eigvals <= 1e-12):
+    cov = np.eye(2)
 L = np.linalg.cholesky(cov)
 
+Z_half = np.random.normal(size=(num_half, 2, N))
+Z_full = np.concatenate([Z_half, -Z_half], axis=0)
+
 mc_payoffs = np.zeros(num_simulations)
+eps = 1e-12
+dt = T / N if N>0 else 0.0
+
 for i in range(num_simulations):
     log_v = np.log(max(v0, eps))
     S = S0
     for j in range(N):
-        z = L @ np.random.normal(size=2)
+        z = L @ Z_full[i, :, j]
         vol_shock, price_shock = z[0], z[1]
-
-        log_v = log_v + k * (np.log(theta) - log_v) * dt + x * np.sqrt(dt) * vol_shock
+        log_v = mu_ou + (log_v - mu_ou) * np.exp(-k*dt) + sigma_ou_const * vol_shock
         variance = max(np.exp(log_v), eps)
         sigma = np.sqrt(variance)
-
         if dt > 0:
-            S *= np.exp((r - q - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * price_shock)
+            S *= np.exp((r - q - 0.5*sigma**2)*dt + sigma*np.sqrt(dt)*price_shock)
+    mc_payoffs[i] = max(S - K, 0.0)
 
-    mc_payoffs[i] = max(S - K, 0)
+mc_price = np.exp(-r*T) * mc_payoffs.mean()
+mc_std = np.exp(-r*T) * mc_payoffs.std(ddof=1) / np.sqrt(num_simulations)
 
-mc_price = np.exp(-r * T) * mc_payoffs.mean()
-mc_std = np.exp(-r * T) * mc_payoffs.std(ddof=1) / np.sqrt(num_simulations)
-
-# Results
+print(f"Monte Carlo Price (antithetic, rho={rho:.3f}): ${mc_price:.4f} (±${mc_std*1.96:.4f} 95% CI)")
 print(f"\nComparison for {ticker} {exp_date} Call Option with Strike {K}:")
 print(f"Market Price: ${market_price:.2f}")
+# Binomial price placeholder (αντικατάστησε με τον ήδη υπολογισμένο σου)
+binomial_price = binomial_price 
 print(f"Binomial Tree Price: ${binomial_price:.2f}")
 print(f"Monte Carlo Price: ${mc_price:.2f} (±${mc_std*1.96:.2f} with 95% CI)")
 
@@ -259,8 +259,3 @@ if market_price > 0:
     mc_diff_pct = (mc_price - market_price) / market_price * 100
     print(f"Percentage Difference (Binomial): {binomial_diff_pct:.2f}%")
     print(f"Percentage Difference (MC): {mc_diff_pct:.2f}%")
-
-# Additional analysis
-intrinsic_value = max(S0 - K, 0.0)
-print("\nAdditional Analysis:")
-print(f"Time Value: ${float(market_price - intrinsic_value):.2f}")
