@@ -122,7 +122,7 @@ Market Price: $338.43
 ---
 
 ## Future Work
-- Add **Heston model calibration** using the implied volatility surface.
+- Add **Heston model calibration** using the implied volatility surface
 - Implement a **Fourier pricing engine** (Carr–Madan or COS method) for efficient and accurate Heston pricing.
 
 ---
