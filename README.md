@@ -22,7 +22,7 @@ This project implements a **binomial tree** and **Monte Carlo simulation** to pr
 ### Pipeline Overview
 ```mermaid
 graph TD
-    A[Market Data from Yahoo Finance] --> B[Log Returns and Variance]
+    A[Market Data from Yahoo Finance] --> B[Log Returns & Variance]
     B --> C[Log-OU Calibration using MLE]
     C --> D[Markov Approximation for Volatility]
     D --> E1[Binomial Tree Pricing]
@@ -49,7 +49,7 @@ where:
 - **x** = volatility of volatility.
 
 #### MLE Formulation
-The conditional distribution of \( X_{t+1} \) given \( X_t \) is Gaussian:
+The conditional distribution of $( X_{t+1} $) given $( X_t $) is Gaussian:
 
 $$ X_{t+1} \mid X_t \sim \mathcal{N}\big( X_t e^{-k\Delta t} + \mu(1 - e^{-k\Delta t}), \, \; \frac{x^2}{2k}(1 - e^{-2k\Delta t}) \big) $$
 
