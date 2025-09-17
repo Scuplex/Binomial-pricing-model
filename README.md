@@ -43,7 +43,7 @@ The **log-variance** is assumed to follow an **Ornstein–Uhlenbeck (OU)** proce
 $$ dX_t = k(\mu - X_t)dt + x \, dW_t $$
 
 where:
-- \( X_t = \ln(v_t) \), the log of variance.
+- $( X_t = $ln(v_t) $), the log of variance.
 - **k** = mean reversion speed.
 - **μ = ln(θ)** = long-term mean (log variance).
 - **x** = volatility of volatility.
