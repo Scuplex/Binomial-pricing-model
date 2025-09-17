@@ -318,6 +318,6 @@ print(f"Monte Carlo Price: ${mc_price:.2f} (±${mc_std*1.96:.2f} with 95% CI)")
 if market_price > 0:
     binomial_diff_pct = (binomial_price - market_price) / market_price * 100
     mc_diff_pct = (mc_price - market_price) / market_price * 100
-    print(f"Percentage Difference (Binomial): {binomial_diff_pct:.2f}%")
+    print(f"Percentage Difference (Binomial) : {binomial_diff_pct:.2f}%")
     print(f"Percentage Difference (MC): {mc_diff_pct:.2f}%")
     
