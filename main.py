@@ -282,39 +282,32 @@ num_simulations = 50000
 if num_simulations % 2 == 1:
     num_simulations += 1
 
+dt = T / N if N > 0 else 0.0
 np.random.seed(42)
+
 num_half = num_simulations // 2
-sigma_ou_const = x * np.sqrt((1 - np.exp(-2 * k * T/N)) / (2 * k)) if k>0 else x * np.sqrt(T/N)
-mu_ou = np.log(theta)
-
-cov = np.array([[1.0, rho], [rho, 1.0]])
-eigvals = np.linalg.eigvals(cov)
-if np.any(eigvals <= 1e-12):
-    cov = np.eye(2)
-L = np.linalg.cholesky(cov)
-
 Z_half = np.random.normal(size=(num_half, 2, N))
-Z_full = np.concatenate([Z_half, -Z_half], axis=0)
+Z_full = np.concatenate([Z_half, -Z_half], axis=0)  # antithetic
 
-mc_payoffs = np.zeros(num_simulations)
-eps = 1e-12
-dt = T / N if N>0 else 0.0
+log_v = np.full(num_simulations, np.log(max(v0, 1e-12)))
+S = np.full(num_simulations, S0)
 
-for i in range(num_simulations):
-    log_v = np.log(max(v0, eps))
-    S = S0
-    for j in range(N):
-        z = L @ Z_full[i, :, j]
-        vol_shock, price_shock = z[0], z[1]
-        log_v = mu_ou + (log_v - mu_ou) * np.exp(-k*dt) + sigma_ou_const * vol_shock
-        variance = max(np.exp(log_v), eps)
-        sigma = np.sqrt(variance)
-        if dt > 0:
-            S *= np.exp((r - q - 0.5*sigma**2)*dt + sigma*np.sqrt(dt)*price_shock)
-    mc_payoffs[i] = max(S - K, 0.0)
+for j in range(N):
+    z = Z_full[:, :, j]
+    vol_shock, price_shock = z[:, 0], z[:, 1]
 
-mc_price = np.exp(-r*T) * mc_payoffs.mean()
-mc_std = np.exp(-r*T) * mc_payoffs.std(ddof=1) / np.sqrt(num_simulations)
+    log_v = mu_ou + (log_v - mu_ou) * np.exp(-k*dt) + sigma_ou_const * vol_shock
+    variance = np.exp(np.maximum(log_v, np.log(1e-12)))
+    sigma = np.sqrt(variance)
+
+    S *= np.exp((r - q - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * price_shock)
+
+payoffs = np.maximum(S - K, 0.0)
+mc_price = np.exp(-r * T) * payoffs.mean()
+mc_std = np.exp(-r * T) * payoffs.std(ddof=1) / np.sqrt(num_simulations)
+
+print(f"Monte Carlo Price: ${mc_price:.4f} (±${1.96*mc_std:.4f} 95% CI)")
+
 
 print(f"Monte Carlo Price (antithetic, rho={rho:.3f}): ${mc_price:.4f} (±${mc_std*1.96:.4f} 95% CI)")
 print(f"\nComparison for {ticker} {exp_date} Call Option with Strike {K}:")
