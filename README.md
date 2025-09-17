@@ -22,8 +22,8 @@ This project implements a **binomial tree** and **Monte Carlo simulation** to pr
 ### Pipeline Overview
 ```mermaid
 graph TD
-    A[Market Data (Yahoo Finance)] --> B[Log Returns & Variance]
-    B --> C[Log-OU Calibration (MLE)]
+    A[Market Data from Yahoo Finance] --> B[Log Returns and Variance]
+    B --> C[Log-OU Calibration using MLE]
     C --> D[Markov Approximation for Volatility]
     D --> E1[Binomial Tree Pricing]
     D --> E2[Monte Carlo Simulation]
