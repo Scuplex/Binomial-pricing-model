@@ -43,7 +43,7 @@ The **log-variance** is assumed to follow an **Ornstein–Uhlenbeck (OU)** proce
 $$ dX_t = k(\mu - X_t)dt + x \, dW_t $$
 
 where:
-- $( X_t = $ln(v_t) $), the log of variance.
+- $( X_t = \ln(v_t) $), the log of variance.
 - **k** = mean reversion speed.
 - **μ = ln(θ)** = long-term mean (log variance).
 - **x** = volatility of volatility.
@@ -57,7 +57,7 @@ The **log-likelihood** is:
 
 $$ \ell(k,\theta,x) = \sum_{t=1}^{T-1} \ln f(X_{t+1} \mid X_t; k, \theta, x) $$
 
-where \( f(\cdot) \) is the normal density.
+where $( f(\cdot) $) is the normal density.
 
 The optimizer minimizes the **negative log-likelihood** subject to parameter bounds.
 
